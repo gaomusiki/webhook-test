@@ -18,3 +18,4 @@ a0连接：https://github.com/gaomusiki/a0-for-amd-test.git
 3. git remote add origin ……你的新建仓库
 4. git push -u origin --all
 5. git push -u origin --tags
+最后 我使用的是AIMAX 365  ROCM选择版本6.4.1  python3.10  ，如果版本有出入的话，笔者不确定测试结果是否能正确
