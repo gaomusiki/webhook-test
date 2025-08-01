@@ -5,7 +5,8 @@
 3. Payload URL里面，需要填一个公网IP，比如说 https://baidu.com/webhook，前面是公网IP/域名，后面是我们本地服务监听的接口，/webhook不能少。
 4. webhook只能向公网ip/域名发送信号，笔者是使用了ngrok，可以免费下载，支持linux环境，然后在终端输入 ngrok http port，其中port是webhook_server.py中webhook服务监听的端口，默认是5000,可以修改，如果使用默认值，就输入ngrok http 5000。
 5. ngrok需要访问官网注册账号，然后 ngrok config add-authtoken <your auntoekn>， 详情请访问官方查询，包括安装 https://ngrok.com/downloads/linux
-6. 仓库设置好webhook后，进入webhook文件夹，python3 webhook_server.py 就可以启动自动测试的脚本。
+6. ngrok http 5000后，在Forwarding 那一行  会有https://xxxx.app-> http://localhost:5000，前面就是你要写进Payload URL里面的公网地址，记得最后加上/webhook
+7. 仓库设置好webhook后，进入webhook文件夹，python3 webhook_server.py 就可以启动自动测试的脚本。
    
    如果amd方的服务器能直接访问公网，或者对ngrok的使用有所限制，那么请测试方自行修改webhook_server.py。
 
