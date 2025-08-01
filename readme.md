@@ -12,7 +12,7 @@
 
 
 
-a0连接：
+a0连接：https://github.com/gaomusiki/a0-for-amd-test.git
 1. 建议git clone 后
 2. git remote remove origin
 3. git remote add origin ……你的新建仓库
