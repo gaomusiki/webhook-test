@@ -1,4 +1,4 @@
-0. 测试者需要一个属于自己的能push的仓库，我会附上github仓库链接，git clone后根据上述2-4设置好webhook后就可以git push了，如果正常的话，你启动webhook_server.py的终端可以看到测试输出，然后你的github 仓库网页端，score-feedback分支可以在score.md中看到分数。
+0. 测试者需要一个属于自己的能push的仓库，我会附上github仓库链接，git clone后根据2-4设置好webhook后就可以git push了，如果正常的话，你启动webhook_server.py的终端可以看到测试输出，然后你的github 仓库网页端，score-feedback分支可以在score.md中看到分数。
 0. 测试者请自行访问a0仓库的readme.md去配置对应的python环境
 1. 本方法使用的是github 提供的webhook功能，即用户向自己仓库push时，仓库会根据设置的webhook链接发送信号，从而让测试端能主动pull用户的最新版本代码，执行测试后，返回分数
 2. webhook地址需学生在自己的仓库，点击setting，选择Webhooks,点击Add webhook，content type里面选择application/json,注意选上just the push event
