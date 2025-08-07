@@ -1,12 +1,16 @@
 # self-defined files to ignore
 submits/
-*.ipynb
+tensorboard/
+wandb/
+ckpt/
 **/.DS_Store
 *.tar
 *_tmp.sh
 *.json
+*.jsonl
 *.safetensors
 *.bin
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

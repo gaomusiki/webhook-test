@@ -650,6 +650,8 @@ score_test_cases = {
         "case1": {
             "score": 10,
             
+            "training": False,
+            
             "b": 4,
             "s": 2048,
             "seqlens": None,
@@ -716,6 +718,8 @@ score_test_cases = {
         "case2": {
             "score": 10,
             
+            "training": True,
+            
             "b": 2,
             "s": 1024,
             "seqlens": None,
@@ -781,6 +785,8 @@ score_test_cases = {
         },
         "case3": {
             "score": 10,
+            
+            "training": False,
             
             "b": 1,
             "s": 4,
@@ -926,27 +932,30 @@ def construct_decoder_args(
             qkv_layout=attn_qkv_layout_ref_to_student[config.qkv_layout],
             num_layers=config.num_layers,
         )
-        torch.manual_seed(config.init_base_seed)
-        past_k = torch.randn(
-            b, past_seqlen_kv, config.num_kv_head, config.head_dim, 
-            dtype=config.param_dtype, device=config.param_device
-        )
-        past_v = torch.randn_like(past_k)
-        past_cu_seqlens = None
         
-        match config.qkv_layout:
-            case AttnQKVLayoutRef.SBHD:
-                past_k, past_v = [x.transpose(0, 1) for x in (past_k, past_v)]
-            case AttnQKVLayoutRef.THD:
-                past_k, past_v = [x.squeeze(0) for x in (past_k, past_v)]
-                past_cu_seqlens = torch.concat([
-                        torch.zeros(1, dtype=torch.int32, device=device),
-                        torch.tensor(past_seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
-                ], dim=0).to(torch.int32)
-                assert past_cu_seqlens[-1] == (t:=len(past_k)), f"The sum of past seqlens ({cu_seqlens[-1]}) != past length ({t})"
-        
-        kv_cache_ref.set(0, past_k.clone(), past_v.clone(), cu_seqlens=safe_clone(past_cu_seqlens))
-        kv_cache.set(0, past_k, past_v, cu_seqlens=past_cu_seqlens)
+        for layer_idx in range(config.num_layers):
+            torch.manual_seed(config.init_base_seed + layer_idx)
+            past_k = torch.randn(
+                b, past_seqlen_kv, config.num_kv_head, config.head_dim, 
+                dtype=config.param_dtype, device=config.param_device
+            )
+            past_v = torch.randn_like(past_k)
+            past_cu_seqlens = None
+            
+            match config.qkv_layout:
+                case AttnQKVLayoutRef.SBHD:
+                    past_k, past_v = [x.transpose(0, 1) for x in (past_k, past_v)]
+                case AttnQKVLayoutRef.THD:
+                    past_k, past_v = [x.squeeze(0) for x in (past_k, past_v)]
+                    past_cu_seqlens = torch.concat([
+                            torch.zeros(1, dtype=torch.int32, device=device),
+                            torch.tensor(past_seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
+                    ], dim=0).to(torch.int32)
+                    assert past_cu_seqlens[-1] == (t:=len(past_k)), f"The sum of past seqlens ({cu_seqlens[-1]}) != past length ({t})"
+            
+            
+            kv_cache_ref.set(layer_idx, past_k.clone(), past_v.clone(), cu_seqlens=safe_clone(past_cu_seqlens))
+            kv_cache.set(layer_idx, past_k, past_v, cu_seqlens=past_cu_seqlens)
     else:
         kv_cache_ref, kv_cache = None, None
     
@@ -1074,9 +1083,13 @@ def test_task2(case_key, case_config):
     
     # check if the output tensor is correct
     assert_close(output, output_ref, atol=atol, rtol=rtol)
+    # check if the meta attribute of outout tensor is correct
+    check_if_io_meta_is_match(output, input)
+    # check if the reset_parameters function works fine
+    check_if_param_reset_is_fine(layer, atol=atol, rtol=rtol)
 
 
-@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.timeout(TIMEOUT * 2)
 @pytest.mark.parametrize(
     "case_key, case_config",
     score_test_cases["task3"].items(),
@@ -1087,6 +1100,8 @@ def test_task3(case_key, case_config):
     past_seqlen_kv, past_seqlens = case_config["past_seqlen_kv"], case_config["past_seqlens"]
     config_ref: TransformerConfigRef = case_config["config"]
     activation_dtype, activation_device = case_config["activation_dtype"], case_config["activation_device"]
+    training = case_config.pop("training", True)
+    assert training or config_ref.online_attn_block_size is None, "online_attn_block_size must be None when training is False"
     atol, rtol = case_config.pop("atol", ATOL), case_config.pop("rtol", RTOL)
     if config_ref.qkv_layout is AttnQKVLayoutRef.THD:
         assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
@@ -1094,7 +1109,7 @@ def test_task3(case_key, case_config):
             assert past_seqlens is not None, "past_seqlens must be given when qkv_layout is THD and past_seqlen_kv > 0"
     
     # construct the input tensor
-    _, input_ids, cu_seqlens, _, _ = construct_decoder_args(
+    _, input_ids, cu_seqlens, kv_cache_ref, kv_cache = construct_decoder_args(
         config_ref,
         b, s, seqlens,
         past_seqlen_kv, past_seqlens,
@@ -1104,6 +1119,9 @@ def test_task3(case_key, case_config):
     
     # instantiate the reference module
     block_ref = TransformerDecoderBlockRef(config_ref)
+    block_ref = block_ref.train() if training else block_ref.eval()
+    if kv_cache_ref is not None:
+        block_ref.set_kv_cache(kv_cache_ref)
     
     # apply the forward pass to get the reference output logits tensor
     logits_ref = block_ref(input_ids.clone(), cu_seqlens=safe_clone(cu_seqlens))
@@ -1115,13 +1133,42 @@ def test_task3(case_key, case_config):
     config_dict["activation_type"] = mlp_activation_type_ref_to_student[config_ref.activation_type]
     config: TransformerConfig = TransformerConfig(**config_dict)
     block = TransformerDecoderBlock(config)
+    block = block.train() if training else block.eval()
+    if kv_cache is not None:
+        block.set_kv_cache(kv_cache)
     
     # apply the forward pass to get student's output logits tensor
     logits = block(input_ids, cu_seqlens=cu_seqlens)
+    kv_cache = block.get_kv_cache()
     
     # check if the output logits tensor is correct
     assert_close(logits, logits_ref, atol=atol, rtol=rtol)
- 
+    # check if the meta attribute of outout logits tensor is correct
+    check_if_io_meta_is_match(logits, input_ids, check_dtype=False)
+    # check if the reset_parameters function works fine
+    check_if_param_reset_is_fine(block, atol=atol, rtol=rtol)
+    
+    # check `get_kv_cache` function works fine
+    kv_cache = block.get_kv_cache()
+    for layer_idx in range(config.num_layers):
+        assert block.training or kv_cache.has(layer_idx), f"The kv cache of layer {layer_idx} is not found"
+    # check `reset_kv_cache` function works fine
+    block.reset_kv_cache()
+    for layer_idx in range(config.num_layers):
+        assert not kv_cache.has(layer_idx), f"The kv cache of layer {layer_idx} is not reset"
+    # check if `num_parameters` function works fine
+    for learnable_only in [True, False]:
+        for unit in ["1", "B", "M", "K"]:
+            p_ref = block_ref.num_parameters(learnable_only=learnable_only, unit=unit)
+            p = block.num_parameters(learnable_only=learnable_only, unit=unit)
+            p_range_str = "all the" if not learnable_only else "learnable only"
+            assert_close(p, p_ref, atol=atol, rtol=rtol, msg=f"The computation of the number of {p_range_str} parameters is not correct in unit {unit}")
+    # check if `num_memory_footprint` function works fine
+    for unit in ["B", "KB", "MB", "GB"]:
+        m_ref = block_ref.num_memory_footprint(unit=unit)
+        m = block.num_memory_footprint(unit=unit)
+        assert_close(m, m_ref, atol=atol, rtol=rtol, msg=f"The computation of the memory footprint is not correct in unit {unit}")
+
 
 def main():
     capture = ResultCapture()

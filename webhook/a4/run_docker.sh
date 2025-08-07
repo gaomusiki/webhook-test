@@ -3,7 +3,7 @@
 # basic info
 docker_prefix=docker.io/library
 docker_name="a4_env"
-docker_version=0
+docker_version=2
 
 workspace_dir="workspace"
 repo_name="a4_repo"

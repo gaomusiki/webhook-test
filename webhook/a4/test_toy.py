@@ -139,6 +139,8 @@ toy_test_cases = {
     },
     "task2": {
         "case1": {
+            "training": True,
+            
             "b": 1,
             "s": 8,
             "seqlens": None,
@@ -203,6 +205,8 @@ toy_test_cases = {
             ),
         },
         "case2": {
+            "training": False,
+            
             "b": 1,
             "s": 1,
             "seqlens": None,
@@ -264,9 +268,11 @@ toy_test_cases = {
                 moe_topk=1,
                 gate_init_mean=0.,
                 gate_init_std=1.,
-            )
+            ),
         },
         "case3": {
+            "training": False,
+            
             "b": 1,
             "s": 3,
             "seqlens": [1, 1, 1],
@@ -356,18 +362,22 @@ def construct_kvcache_args(
             v = torch.randn_like(k)
             cu_seqlens = None
             
-            match qkv_layout:
-                case AttnQKVLayout.SBHD:
-                    k, v = [x.transpose(0, 1) for x in (k, v)]
-                case AttnQKVLayout.THD:
-                    assert b == 1, "b should be equal to 1 when qkv_layout is THD"
-                    assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
-                    k, v = [x.squeeze(0) for x in (k, v)]
-                    cu_seqlens = torch.concat([
-                            torch.zeros(1, dtype=torch.int32, device=device),
-                            torch.tensor(seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
-                    ], dim=0).to(torch.int32)
-                    assert cu_seqlens[-1] == (t:=b*s), f"The sum of seqlens ({cu_seqlens[-1]}) != length ({t})"
+            if qkv_layout == AttnQKVLayout.BSHD:
+                pass
+            elif qkv_layout == AttnQKVLayout.SBHD:
+                k, v = [x.transpose(0, 1) for x in (k, v)]
+            elif qkv_layout == AttnQKVLayout.THD:
+                assert b == 1, "b should be equal to 1 when qkv_layout is THD"
+                assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
+                k, v = [x.squeeze(0) for x in (k, v)]
+                cu_seqlens = torch.concat([
+                    torch.zeros(1, dtype=torch.int32, device=device),
+                    torch.tensor(seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
+                ], dim=0).to(torch.int32)
+                assert cu_seqlens[-1] == (t := b * s), f"The sum of seqlens ({cu_seqlens[-1]}) != length ({t})"
+            else:
+                raise ValueError(f"Unsupported qkv_layout: {qkv_layout}")
+
             input_tensors.append((k, v, cu_seqlens))
         else:
             input_tensors.append(None)
@@ -408,26 +418,32 @@ def construct_decoder_args(
             qkv_layout=config.qkv_layout,
             num_layers=config.num_layers,
         )
-        torch.manual_seed(config.init_base_seed)
-        past_k = torch.randn(
-            b, past_seqlen_kv, config.num_kv_head, config.head_dim, 
-            dtype=config.param_dtype, device=config.param_device
-        )
-        past_v = torch.randn_like(past_k)
-        past_cu_seqlens = None
         
-        match config.qkv_layout:
-            case AttnQKVLayout.SBHD:
+        for layer_idx in range(config.num_layers):
+            torch.manual_seed(config.init_base_seed + layer_idx)
+            past_k = torch.randn(
+                b, past_seqlen_kv, config.num_kv_head, config.head_dim, 
+                dtype=config.param_dtype, device=config.param_device
+            )
+            past_v = torch.randn_like(past_k)
+            past_cu_seqlens = None
+            
+            if config.qkv_layout == AttnQKVLayout.BSHD:
+                pass
+            elif config.qkv_layout == AttnQKVLayout.SBHD:
                 past_k, past_v = [x.transpose(0, 1) for x in (past_k, past_v)]
-            case AttnQKVLayout.THD:
+            elif config.qkv_layout == AttnQKVLayout.THD:
                 past_k, past_v = [x.squeeze(0) for x in (past_k, past_v)]
                 past_cu_seqlens = torch.concat([
-                        torch.zeros(1, dtype=torch.int32, device=device),
-                        torch.tensor(past_seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
+                    torch.zeros(1, dtype=torch.int32, device=device),
+                    torch.tensor(past_seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
                 ], dim=0).to(torch.int32)
-                assert past_cu_seqlens[-1] == (t:=len(past_k)), f"The sum of past seqlens ({cu_seqlens[-1]}) != past length ({t})"
-        
-        kv_cache.set(0, past_k, past_v, cu_seqlens=past_cu_seqlens)
+                assert past_cu_seqlens[-1] == (t := len(past_k)), \
+                    f"The sum of past seqlens ({past_cu_seqlens[-1]}) != past length ({t})"
+            else:
+                raise ValueError(f"Unsupported qkv_layout: {config.qkv_layout}")
+            
+            kv_cache.set(layer_idx, past_k, past_v, cu_seqlens=past_cu_seqlens)
     else:
         kv_cache = None
     
@@ -597,32 +613,32 @@ def test_task1(case_key, case_config):
     # apply each operation to check if the output for each operation is correct
     for i, (op, input_tensor, output_ref) in enumerate(zip(ops, input_tensors, outputs_ref)):
         try:
-            match op['op']:
-                case "reset":
-                    kv_cache.reset()
-                case "has":
-                    layer_idx = op['layer_idx']
-                    assert kv_cache.has(layer_idx) == output_ref
-                case "get":
-                    layer_idx = op['layer_idx']
-                    k, v, cu_seqlens = kv_cache.get(layer_idx)
-                    k_ref, v_ref, cu_seqlens_ref = output_ref
-                    assert_close(k, k_ref, atol=atol, rtol=rtol)
-                    assert_close(v, v_ref, atol=atol, rtol=rtol)
-                    if cu_seqlens_ref is not None:
-                        assert_close(cu_seqlens, cu_seqlens_ref, atol=atol, rtol=rtol)
-                    else:
-                        assert cu_seqlens is None
-                case "set":
-                    layer_idx = op['layer_idx']
-                    k, v, cu_seqlens = input_tensor
-                    kv_cache.set(layer_idx, k, v, cu_seqlens=cu_seqlens)
-                case "append":
-                    layer_idx = op['layer_idx']
-                    k, v, cu_seqlens = input_tensor
-                    kv_cache.append(layer_idx, k, v, cu_seqlens=cu_seqlens)
-                case _:
-                    raise ValueError(f"Unknown operation: {op['op']}")
+            if op['op'] == "reset":
+                kv_cache.reset()
+            elif op['op'] == "has":
+                layer_idx = op['layer_idx']
+                assert kv_cache.has(layer_idx) == output_ref
+            elif op['op'] == "get":
+                layer_idx = op['layer_idx']
+                k, v, cu_seqlens = kv_cache.get(layer_idx)
+                k_ref, v_ref, cu_seqlens_ref = output_ref
+                assert_close(k, k_ref, atol=atol, rtol=rtol)
+                assert_close(v, v_ref, atol=atol, rtol=rtol)
+                if cu_seqlens_ref is not None:
+                    assert_close(cu_seqlens, cu_seqlens_ref, atol=atol, rtol=rtol)
+                else:
+                    assert cu_seqlens is None
+            elif op['op'] == "set":
+                layer_idx = op['layer_idx']
+                k, v, cu_seqlens = input_tensor
+                kv_cache.set(layer_idx, k, v, cu_seqlens=cu_seqlens)
+            elif op['op'] == "append":
+                layer_idx = op['layer_idx']
+                k, v, cu_seqlens = input_tensor
+                kv_cache.append(layer_idx, k, v, cu_seqlens=cu_seqlens)
+            else:
+                raise ValueError(f"Unknown operation: {op['op']}")
+
         except Exception as e:
             assert False, f"The {i+1}-th operation `{op['op']}` failed due to the error: {e}"
         
@@ -647,22 +663,22 @@ def test_task2(case_key, case_config):
     if case_key == "case1":
         output_ref = torch.tensor(
             [[[ -1.6328, -14.3125,  -4.7188,  -5.0938,   0.3770,  -1.6016,  -5.3750,
-                0.8789],
-            [  5.0312,   9.8750,  -2.1562,   5.3125,  -2.2188,   5.2500,   0.2373,
-                -6.2188],
-            [  2.4844,  -9.8750,   0.8711,  -5.2500,   4.5625,  -6.5625,  -2.1875,
-                -0.0664],
-            [ -3.4531, -15.8750,   3.1250,  -7.9688,   1.1484, -12.6875,   1.8281,
-                5.1562],
-            [  4.4062,   0.1680,   0.3398,  -2.5938,   7.0938,   0.2715,  -8.1875,
-                7.6562],
-            [ -3.8594, -16.3750,   2.7031,  -6.7812,   1.6875, -15.1875,   3.3594,
-                7.3438],
-            [ -3.4688,   1.3750,  -1.3125,   0.7305,  -5.9062,  -0.9570,   2.7500,
-                0.0913],
-            [ -9.1250,   0.3516,   2.3438,   3.2656, -13.2500,  -4.8750,   8.5625,
-                6.7812]]
-            ],
+             0.8789],
+            [  6.3438,  11.1250,  -1.8672,   6.3750,  -0.5703,   5.6250,  -0.2734,
+                -7.4688],
+            [  0.5391,  -7.1875,   1.2656,  -3.7812,   8.4375,  -4.0625,  -3.5312,
+                1.9922],
+            [  2.7031,  -0.1162,   3.5625,  -5.4062,   2.9531,  -1.2500,  -3.1094,
+                4.8125],
+            [ -3.8125,  -6.7188,   2.9688,   0.1011,   4.1562,  -9.5625,   4.6875,
+                5.2188],
+            [  5.3438,  -1.9375,   1.1562,  -7.5312,   2.4062,  -0.8555,  -6.0938,
+                8.6250],
+            [ -3.8906, -11.8125,   4.1875,  -6.4688,   6.9062, -16.2500,   4.6250,
+                6.8750],
+            [ -4.1562,   3.1719,  -1.3906,  -0.3086, -19.8750,   3.0156,   2.8125,
+                4.3125]]
+             ],
             dtype=activation_dtype,
             device=activation_device,
         )
@@ -716,6 +732,8 @@ def test_task3(case_key, case_config):
     past_seqlen_kv, past_seqlens = case_config["past_seqlen_kv"], case_config["past_seqlens"]
     config: TransformerConfig = case_config["config"]
     activation_dtype, activation_device = case_config["activation_dtype"], case_config["activation_device"]
+    training = case_config.pop("training", True)
+    assert training or config.online_attn_block_size is None, "online_attn_block_size must be None when training is False"
     atol, rtol = case_config.pop("atol", ATOL), case_config.pop("rtol", RTOL)
     if config.qkv_layout is AttnQKVLayout.THD:
         assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
@@ -726,40 +744,40 @@ def test_task3(case_key, case_config):
     if case_key == "case1":
         logits_ref = torch.tensor(
             [[[-1.2925,  2.5357, -0.7369, -0.7364, -0.5004,  0.9618, -0.5549,
-                1.1369, -0.5655,  0.4905],
-            [-3.5297,  1.0178, -1.6529, -0.7515,  1.9548,  1.2376,  0.8119,
-                1.6100, -1.3717,  0.7523],
-            [-2.2095,  2.9566, -0.3049,  0.9765,  0.0953,  1.5885, -0.3909,
-                2.4821,  0.5963,  1.2973],
-            [ 4.7399,  2.9677, -1.3212,  1.0636, -2.2609,  2.0457, -0.8680,
-            -1.5315,  0.4904,  2.3503],
-            [-1.1233,  3.1436, -2.7241, -0.1384,  0.7005,  2.7857,  0.3798,
-                1.8135, -0.5760,  2.2896],
-            [-1.0801,  3.1166, -2.7623, -0.1017,  0.7399,  2.8142,  0.4089,
-                1.7805, -0.5800,  2.3364],
-            [-5.6624,  0.0164, -1.2714, -0.9070,  3.0396,  1.0790,  1.4420,
-                2.4621, -1.7371,  0.3789],
-            [ 1.4993,  4.2255, -0.8165,  2.0971, -0.9501,  2.6483, -1.1022,
-                1.1436,  0.8783,  1.8043]]
+            1.1369, -0.5655,  0.4905],
+            [-3.4057,  1.3570, -1.5379, -0.7549,  1.6519,  1.2669,  0.6092,
+                1.7056, -1.2644,  0.6840],
+            [-1.7036,  3.1648, -0.5522,  0.9891, -0.1064,  1.8245, -0.3872,
+                2.3809,  0.6620,  1.5979],
+            [ 3.0575,  2.4082, -1.1623, -0.3622, -1.9437,  1.4024, -0.7102,
+            -1.4185, -0.5156,  1.2056],
+            [-3.4312,  1.0153, -1.4652, -1.0645,  1.6408,  1.0096,  0.6544,
+                1.4626, -1.4687,  0.4301],
+            [-3.1556,  0.6621, -1.4333, -1.3881,  1.5312,  0.7911,  0.6917,
+                1.0304, -1.7093,  0.1825],
+            [-5.0665,  0.8959, -2.1492,  0.0602,  3.3647,  2.4823,  1.7351,
+                2.9604, -1.4029,  1.7156],
+            [ 1.0452,  3.8170, -1.2443,  1.9853, -0.2522,  2.6731, -0.7634,
+                1.0764,  0.5081,  1.9799]]
             ],
             dtype=config.param_dtype,
             device=activation_device,
         )
     elif case_key == "case2":
         logits_ref = torch.tensor(
-            [[[-0.0360,  1.3526,  0.7173,  0.2733, -0.1028,  1.7572, -0.4365,
-            0.3312, -1.3997, -2.1269]]],
+            [[[-0.0713, -0.7954,  1.0491, -4.1084, -1.7625, -1.1286, -0.6247,
+           -1.1881, -2.9059, -3.9017]]],
             dtype=config.param_dtype,
             device=activation_device,
         )
     elif case_key == "case3":
         logits_ref = torch.tensor(
-            [[[-5.8651, -0.8876,  1.3836,  1.5728,  3.6354,  0.4163,  0.7096,
-                2.5449, -1.1403, -1.2984],
-            [ 4.9942, -1.4343,  0.0264, -1.8479, -2.9359, -1.7208, -0.4498,
-            -3.1674,  0.4437, -0.3888],
-            [ 4.1063, -1.6828, -0.3446, -2.3519, -2.1201, -1.7020, -0.2547,
-            -3.0181, -0.3096, -1.0467]]
+            [[[-5.7833e+00, -4.1559e+00, -7.2531e-01, -1.2458e+00,  5.3105e+00,
+            -1.1368e+00,  2.0874e+00,  3.9418e-01, -3.1351e+00, -1.5997e+00],
+            [ 5.1554e-01, -2.8597e+00,  7.3401e-01,  7.7610e-01,  5.3917e-01,
+            -1.0834e+00,  1.0781e+00, -7.7173e-01,  1.2294e+00,  1.4850e-01],
+            [ 8.8537e-01,  1.7028e+00, -5.3950e-03,  4.7097e-01, -1.2100e+00,
+                1.1996e+00, -4.4219e-01,  2.1394e-01, -2.2099e-02,  1.5710e+00]]
             ],
             dtype=config.param_dtype,
             device=activation_device,
@@ -768,7 +786,7 @@ def test_task3(case_key, case_config):
         raise ValueError(f"Unknown key for toy test cases: {case_key}")
 
     # construct the input tensors
-    _, input_ids, cu_seqlens, _ = construct_decoder_args(
+    _, input_ids, cu_seqlens, kv_cache = construct_decoder_args(
         config,
         b, s, seqlens,
         past_seqlen_kv, past_seqlens,
@@ -778,6 +796,9 @@ def test_task3(case_key, case_config):
     
     # instantiate the module
     block = TransformerDecoderBlock(config)
+    block = block.train() if training else block.eval()
+    if kv_cache is not None:
+        block.set_kv_cache(kv_cache)
     
     # apply the forward pass
     logits = block(input_ids, cu_seqlens=cu_seqlens)

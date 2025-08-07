@@ -170,8 +170,8 @@ class NTKAwareRoPE(nn.Module):
         dtype: torch.dtype = torch.float32,
         device: str = 'cpu', 
     ) -> torch.Tensor:
-        base *= k ** (dim / (dim-2)) # base change formula
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).to(device=device, dtype=dtype) / dim))
+        new_base = float(base) * k ** (dim / (dim-2)) # base change formula, here type cast to avoid cython type error
+        inv_freq = 1.0 / (new_base ** (torch.arange(0, dim, 2).to(device=device, dtype=dtype) / dim))
         
         return inv_freq
     

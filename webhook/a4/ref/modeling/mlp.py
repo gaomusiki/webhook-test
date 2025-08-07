@@ -21,8 +21,7 @@ class DenseMLPWithLoRA(nn.Module):
     This is a GLU-style dense MLP layer with LoRA adapters.
     """
     
-    def __init__(
-        self,
+    def __init__(self,
         hidden_size: int,
         ffh_size: int,
         activation_type: MLPActivationType = MLPActivationType.SILU,
@@ -192,20 +191,12 @@ class DenseMLPWithLoRA(nn.Module):
         """
         # raise NotImplementedError("Assignment2 - Task1")
         
-        # up / down / gate proj
-        torch.manual_seed(self.init_base_seed + 1)
-        self.weight_init_func(self.up_proj.t())
-        torch.manual_seed(self.init_base_seed + 2)
-        self.weight_init_func(self.gate_proj.t())
-        torch.manual_seed(self.init_base_seed + 3)
-        self.weight_init_func(self.down_proj.t())
-        
-        # lora
+        torch.manual_seed(self.init_base_seed + 1); self.weight_init_func(self.up_proj.t())
+        torch.manual_seed(self.init_base_seed + 2); self.weight_init_func(self.gate_proj.t())
+        torch.manual_seed(self.init_base_seed + 3); self.weight_init_func(self.down_proj.t())
         if self.lora_rank > 0:
-            torch.manual_seed(self.lora_init_base_seed + 1)
-            self.lora_weight_init_func(self.lora_weight_A.t())
-            torch.manual_seed(self.lora_init_base_seed + 2)
-            self.lora_weight_init_func(self.lora_weight_B.t())
+            torch.manual_seed(self.lora_init_base_seed + 1); self.lora_weight_init_func(self.lora_weight_A.t())
+            torch.manual_seed(self.lora_init_base_seed + 2); self.lora_weight_init_func(self.lora_weight_B.t())
 
     
 class SparseMLPWithLoRA(nn.Module):
@@ -215,8 +206,7 @@ class SparseMLPWithLoRA(nn.Module):
             and each expert is a dense MLP with LoRA adapters.
     """
     
-    def __init__(
-        self,
+    def __init__(self,
         hidden_size: int,
         ffh_size: int,
         activation_type: MLPActivationType = MLPActivationType.SILU,
@@ -261,7 +251,7 @@ class SparseMLPWithLoRA(nn.Module):
         super().__init__()
         # raise NotImplementedError("Assignment2 - Task2")
         
-        assert hidden_size % num_experts == 0, "hidden_size must be divisible by num_experts"
+        assert ffh_size % num_experts == 0, "ffh_size must be divisible by num_experts"
         
         self.hidden_size = hidden_size
         self.ffh_size = ffh_size
@@ -282,7 +272,7 @@ class SparseMLPWithLoRA(nn.Module):
         self.dtype = dtype
         self.device = device
         
-        self.expert_size = self.hidden_size // self.num_global_experts
+        self.expert_size = self.ffh_size // self.num_global_experts
         self.num_local_experts = self.num_global_experts // self.world_size
         self.start_expert_idx, self.end_expert_idx = self.rank * self.num_local_experts, (self.rank + 1) * self.num_local_experts
         
@@ -301,7 +291,7 @@ class SparseMLPWithLoRA(nn.Module):
                 dtype=self.dtype,
                 device=self.device,
             )
-            for expert_idx in range(self.num_local_experts)
+            for expert_idx in range(self.start_expert_idx, self.end_expert_idx)
         ])
         
         # init global gating weights

@@ -134,10 +134,12 @@ def score_results(
 def check_if_io_meta_is_match(
     output: torch.Tensor,
     input: torch.Tensor,
+    check_dtype: bool = True,
+    check_device: bool = True,
 ) -> None:
     # check if the meta attribute of outout tensor is correct
-    assert output.dtype == input.dtype, f"The dtype of output tensor should be {input.dtype}, but got {output.dtype}."
-    assert output.device == input.device, f"The device of output tensor should be {input.device}, but got {output.device}."
+    assert not check_dtype or output.dtype == input.dtype, f"The dtype of output tensor should be {input.dtype}, but got {output.dtype}."
+    assert not check_device or output.device == input.device, f"The device of output tensor should be {input.device}, but got {output.device}."
     
     
 def check_if_param_reset_is_fine(

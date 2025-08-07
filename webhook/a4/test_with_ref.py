@@ -173,6 +173,7 @@ toy_test_cases = {
     },
     "task2": {
         "case1": {
+            "training": True,
             "b": 1,
             "s": 8,
             "seqlens": None,
@@ -237,6 +238,7 @@ toy_test_cases = {
             ),
         },
         "case2": {
+            "training": False,
             "b": 1,
             "s": 1,
             "seqlens": None,
@@ -301,6 +303,7 @@ toy_test_cases = {
             )
         },
         "case3": {
+            "training": False,
             "b": 1,
             "s": 3,
             "seqlens": [1, 1, 1],
@@ -390,18 +393,22 @@ def construct_kvcache_args(
             v = torch.randn_like(k)
             cu_seqlens = None
             
-            match qkv_layout:
-                case AttnQKVLayoutRef.SBHD:
-                    k, v = [x.transpose(0, 1) for x in (k, v)]
-                case AttnQKVLayoutRef.THD:
-                    assert b == 1, "b should be equal to 1 when qkv_layout is THD"
-                    assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
-                    k, v = [x.squeeze(0) for x in (k, v)]
-                    cu_seqlens = torch.concat([
-                            torch.zeros(1, dtype=torch.int32, device=device),
-                            torch.tensor(seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
-                    ], dim=0).to(torch.int32)
-                    assert cu_seqlens[-1] == (t:=b*s), f"The sum of seqlens ({cu_seqlens[-1]}) != length ({t})"
+            if qkv_layout == AttnQKVLayoutRef.BSHD:
+                pass
+            elif qkv_layout == AttnQKVLayoutRef.SBHD:
+                k, v = [x.transpose(0, 1) for x in (k, v)]
+            elif qkv_layout == AttnQKVLayoutRef.THD:
+                assert b == 1, "b should be equal to 1 when qkv_layout is THD"
+                assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
+                k, v = [x.squeeze(0) for x in (k, v)]
+                cu_seqlens = torch.concat([
+                    torch.zeros(1, dtype=torch.int32, device=device),
+                    torch.tensor(seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
+                ], dim=0).to(torch.int32)
+                assert cu_seqlens[-1] == (t := b * s), f"The sum of seqlens ({cu_seqlens[-1]}) != length ({t})"
+            else:
+                raise ValueError(f"Unsupported qkv_layout: {qkv_layout}")
+
             input_tensors.append((k, v, cu_seqlens))
         else:
             input_tensors.append(None)
@@ -446,27 +453,33 @@ def construct_decoder_args(
             qkv_layout=attn_qkv_layout_ref_to_student[config.qkv_layout],
             num_layers=config.num_layers,
         )
-        torch.manual_seed(config.init_base_seed)
-        past_k = torch.randn(
-            b, past_seqlen_kv, config.num_kv_head, config.head_dim, 
-            dtype=config.param_dtype, device=config.param_device
-        )
-        past_v = torch.randn_like(past_k)
-        past_cu_seqlens = None
         
-        match config.qkv_layout:
-            case AttnQKVLayoutRef.SBHD:
+        for layer_idx in range(config.num_layers):
+            torch.manual_seed(config.init_base_seed + layer_idx)
+            past_k = torch.randn(
+                b, past_seqlen_kv, config.num_kv_head, config.head_dim, 
+                dtype=config.param_dtype, device=config.param_device
+            )
+            past_v = torch.randn_like(past_k)
+            past_cu_seqlens = None
+            
+            if config.qkv_layout == AttnQKVLayoutRef.BSHD:
+                pass
+            elif config.qkv_layout == AttnQKVLayoutRef.SBHD:
                 past_k, past_v = [x.transpose(0, 1) for x in (past_k, past_v)]
-            case AttnQKVLayoutRef.THD:
+            elif config.qkv_layout == AttnQKVLayoutRef.THD:
                 past_k, past_v = [x.squeeze(0) for x in (past_k, past_v)]
                 past_cu_seqlens = torch.concat([
-                        torch.zeros(1, dtype=torch.int32, device=device),
-                        torch.tensor(past_seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
+                    torch.zeros(1, dtype=torch.int32, device=device),
+                    torch.tensor(past_seqlens, dtype=torch.int32, device=device).cumsum(dim=0)
                 ], dim=0).to(torch.int32)
-                assert past_cu_seqlens[-1] == (t:=len(past_k)), f"The sum of past seqlens ({cu_seqlens[-1]}) != past length ({t})"
-        
-        kv_cache_ref.set(0, past_k.clone(), past_v.clone(), cu_seqlens=safe_clone(past_cu_seqlens))
-        kv_cache.set(0, past_k, past_v, cu_seqlens=past_cu_seqlens)
+                assert past_cu_seqlens[-1] == (t := len(past_k)), \
+                    f"The sum of past seqlens ({past_cu_seqlens[-1]}) != past length ({t})"
+            else:
+                raise ValueError(f"Unsupported qkv_layout: {config.qkv_layout}")
+            
+            kv_cache_ref.set(layer_idx, past_k.clone(), past_v.clone(), cu_seqlens=safe_clone(past_cu_seqlens))
+            kv_cache.set(layer_idx, past_k, past_v, cu_seqlens=past_cu_seqlens)
     else:
         kv_cache_ref, kv_cache = None, None
     
@@ -516,35 +529,35 @@ def test_task1(case_key, case_config):
     # apply each operation to check if the output for each operation is correct
     for i, (op, input_tensor) in enumerate(zip(ops, input_tensors)):
         try:
-            match op['op']:
-                case "reset":
-                    kv_cache_ref.reset()
-                    kv_cache.reset()
-                case "has":
-                    layer_idx = op['layer_idx']
-                    assert kv_cache.has(layer_idx) == kv_cache_ref.has(layer_idx)
-                case "get":
-                    layer_idx = op['layer_idx']
-                    k, v, cu_seqlens = kv_cache.get(layer_idx)
-                    k_ref, v_ref, cu_seqlens_ref = kv_cache_ref.get(layer_idx)
-                    assert_close(k, k_ref, atol=atol, rtol=rtol)
-                    assert_close(v, v_ref, atol=atol, rtol=rtol)
-                    if cu_seqlens_ref is not None:
-                        assert_close(cu_seqlens, cu_seqlens_ref, atol=atol, rtol=rtol)
-                    else:
-                        assert cu_seqlens is None
-                case "set":
-                    layer_idx = op['layer_idx']
-                    k, v, cu_seqlens = input_tensor
-                    kv_cache.set(layer_idx, k, v, cu_seqlens=cu_seqlens)
-                    kv_cache_ref.set(layer_idx, k, v, cu_seqlens=cu_seqlens)
-                case "append":
-                    layer_idx = op['layer_idx']
-                    k, v, cu_seqlens = input_tensor
-                    kv_cache.append(layer_idx, k, v, cu_seqlens=cu_seqlens)
-                    kv_cache_ref.append(layer_idx, k, v, cu_seqlens=cu_seqlens)
-                case _:
-                    raise ValueError(f"Unknown operation: {op['op']}")
+            if op['op'] == "reset":
+                kv_cache_ref.reset()
+                kv_cache.reset()
+            elif op['op'] == "has":
+                layer_idx = op['layer_idx']
+                assert kv_cache.has(layer_idx) == kv_cache_ref.has(layer_idx)
+            elif op['op'] == "get":
+                layer_idx = op['layer_idx']
+                k, v, cu_seqlens = kv_cache.get(layer_idx)
+                k_ref, v_ref, cu_seqlens_ref = kv_cache_ref.get(layer_idx)
+                assert_close(k, k_ref, atol=atol, rtol=rtol)
+                assert_close(v, v_ref, atol=atol, rtol=rtol)
+                if cu_seqlens_ref is not None:
+                    assert_close(cu_seqlens, cu_seqlens_ref, atol=atol, rtol=rtol)
+                else:
+                    assert cu_seqlens is None
+            elif op['op'] == "set":
+                layer_idx = op['layer_idx']
+                k, v, cu_seqlens = input_tensor
+                kv_cache.set(layer_idx, k, v, cu_seqlens=cu_seqlens)
+                kv_cache_ref.set(layer_idx, k, v, cu_seqlens=cu_seqlens)
+            elif op['op'] == "append":
+                layer_idx = op['layer_idx']
+                k, v, cu_seqlens = input_tensor
+                kv_cache.append(layer_idx, k, v, cu_seqlens=cu_seqlens)
+                kv_cache_ref.append(layer_idx, k, v, cu_seqlens=cu_seqlens)
+            else:
+                raise ValueError(f"Unknown operation: {op['op']}")
+
         except Exception as e:
             assert False, f"The {i+1}-th operation `{op['op']}` failed due to the error: {e}"
         
@@ -605,6 +618,8 @@ def test_task3(case_key, case_config):
     past_seqlen_kv, past_seqlens = case_config["past_seqlen_kv"], case_config["past_seqlens"]
     config_ref: TransformerConfigRef = case_config["config"]
     activation_dtype, activation_device = case_config["activation_dtype"], case_config["activation_device"]
+    training = case_config.pop("training", True)
+    assert training or config_ref.online_attn_block_size is None, "online_attn_block_size must be None when training is False"
     atol, rtol = case_config.pop("atol", ATOL), case_config.pop("rtol", RTOL)
     if config_ref.qkv_layout is AttnQKVLayoutRef.THD:
         assert seqlens is not None, "seqlens must be given when qkv_layout is THD"
@@ -612,7 +627,7 @@ def test_task3(case_key, case_config):
             assert past_seqlens is not None, "past_seqlens must be given when qkv_layout is THD and past_seqlen_kv > 0"
     
     # construct the input tensor
-    _, input_ids, cu_seqlens, _, _ = construct_decoder_args(
+    _, input_ids, cu_seqlens, kv_cache_ref, kv_cache = construct_decoder_args(
         config_ref,
         b, s, seqlens,
         past_seqlen_kv, past_seqlens,
@@ -622,6 +637,9 @@ def test_task3(case_key, case_config):
     
     # instantiate the reference module
     block_ref = TransformerDecoderBlockRef(config_ref)
+    block_ref = block_ref.train() if training else block_ref.eval()
+    if kv_cache_ref is not None:
+        block_ref.set_kv_cache(kv_cache_ref)
     
     # apply the forward pass to get the reference output logits tensor
     logits_ref = block_ref(input_ids.clone(), cu_seqlens=safe_clone(cu_seqlens))
@@ -633,6 +651,9 @@ def test_task3(case_key, case_config):
     config_dict["activation_type"] = mlp_activation_type_ref_to_student[config_ref.activation_type]
     config: TransformerConfig = TransformerConfig(**config_dict)
     block = TransformerDecoderBlock(config)
+    block = block.train() if training else block.eval()
+    if kv_cache is not None:
+        block.set_kv_cache(kv_cache)
     
     # apply the forward pass to get student's output logits tensor
     logits = block(input_ids, cu_seqlens=cu_seqlens)

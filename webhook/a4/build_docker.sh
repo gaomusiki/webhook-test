@@ -19,7 +19,7 @@ else
 fi
 
 
-docker_version=0
+docker_version=2
 
 # build docker image
 docker build -f "$docker_file" -t "$docker_name:v$docker_version" .
