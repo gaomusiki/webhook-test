@@ -52,7 +52,7 @@ score_test_cases = {
             "e": 2048,
             "top_p": 0.7,
             "top_k": 32,
-            "device": "cpu",  # Default to CPU
+            "device": "cuda",  # Default to CPU
             "dtype": torch.float32,
         },
         "case2": {
@@ -65,7 +65,7 @@ score_test_cases = {
             "e": 1024,
             "top_p": 0.5,
             "top_k": 50,
-            "device": "cpu",  # Default to CPU
+            "device": "cuda",  # Default to cuda
             "dtype": torch.bfloat16,
         },
         "case3": {
@@ -78,7 +78,7 @@ score_test_cases = {
             "e": 1024,
             "top_p": 0.95,
             "top_k": 5,
-            "device": "cpu",  # Default to CPU
+            "device": "cuda",  # Default to cuda
             "dtype": torch.float16,
         },
         "case4": {
@@ -91,7 +91,7 @@ score_test_cases = {
             "e": 2048,
             "top_p": 0.0,
             "top_k": 10,
-            "device": "cpu",  # Default to CPU
+            "device": "cuda",  # Default to cuda
             "dtype": torch.bfloat16,
         },
         "case5": {
@@ -104,7 +104,7 @@ score_test_cases = {
             "e": 512,
             "top_p": 0.8,
             "top_k": None,
-            "device": "cpu",  # Default to CPU
+            "device": "cuda",  # Default to cuda
             "dtype": torch.float32,
         }
     }

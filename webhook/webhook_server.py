@@ -1,8 +1,21 @@
 from flask import Flask, request, jsonify
 import subprocess
 import os
+import sys
 
 app = Flask(__name__)
+
+def get_assignment_id():
+    """从命令行参数中获取assignment_id"""
+    for arg in sys.argv[1:]:
+        if arg.startswith('assignment_id='):
+            return arg.split('=')[1]
+    return 'a4'  # 默认值
+
+# 在应用启动时获取assignment_id
+assignment_id = get_assignment_id()
+
+
 @app.route('/webhook', methods=['POST'])
 def github_webhook():
     # 获取 GitHub 传过来的 JSON 数据
@@ -25,7 +38,10 @@ def github_webhook():
     print(repo_name)
     student_name = repo_name.split('-')[-1]
     print(student_name)
-    subprocess.Popen(['bash', './a0/test_script.sh', ssh_url, repo_name,student_name])
+    # 使用动态获取的assignment_id构建脚本路径
+    script_path = f'./{assignment_id}/test_script.sh'
+    subprocess.Popen(['bash', script_path, ssh_url, repo_name, student_name])
+    
     return jsonify({'status': 'finish test'}), 200
 
 
