@@ -1,0 +1,11 @@
+pytest>=7.4.2
+cython>=3.0.11
+pytest-timeout>=2.3.1
+tqdm>=4.66.1
+pynvml>=11.4.1
+triton>=2.2.0
+torch>=2.1.0
+transformers>=4.46.0
+sentencepiece>=0.2.0
+safetensors>=0.4.5
+einops>=0.8.0

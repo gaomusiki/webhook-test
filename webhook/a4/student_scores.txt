@@ -1,0 +1,2 @@
+gaomusiki env variable `STUDENT_REPO_ROOT` is not set
+1 env variable `STUDENT_REPO_ROOT` is not set

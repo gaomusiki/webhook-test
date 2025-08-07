@@ -1,0 +1,15 @@
+# from base light image
+FROM a_env_light_base:v0
+
+# copy ref to workspace temporarily
+COPY ref /workspace/ref
+
+# compile all the .py files in ref/ to .so files
+# and delete the source .py files
+RUN cythonize -i -3 ref/**/*.py ref/*.py && \
+    find ref/ -name "*.py" -type f -exec rm -f {} + && \
+    find ref/ -name "*.c" -type f -exec rm -f {} + && \
+    find ref/ -type d -name "__pycache__" -exec rm -rf {} +
+
+# add ref to python path
+ENV PYTHONPATH="/workspace:${PYTHONPATH}"
